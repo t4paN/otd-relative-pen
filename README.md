@@ -22,17 +22,14 @@ but it's absolute. This plugin does both at once.
 That's all. The plugin sets up KDE by itself. The usual Output-tab fields (Sensitivity, Rotation, Reset
 Time) work the same as in stock Relative Mode.
 
-## Optional extras (Filters tab)
-Tick one, then click **Save**.
+## Optional extra (Filters tab)
+**Relative Pen: Freeze Cursor Position on Supported App Sliders**: tick it and click **Save** to let
+native apps freeze the pen cursor, e.g. during a slider drag, and receive the motion themselves. It only
+does something in apps that support it (see below). Browsers can't use it: they block pages from
+reaching local programs, and their own pointer lock only catches a mouse.
 
-- **Relative Pen: Act as Mouse While Hovering** *(new)*: while the tip is up, the pen moves the cursor as
-  a mouse. Touch down and it becomes a pen, right under the cursor, with pressure. The point is that
-  **pointer lock works in every app**, including browsers and games; Wayland only ever locks a mouse. The
-  hover mouse always runs flat (no acceleration), 1:1 with the pen. This turns on KDE's "sync tablet with
-  mouse" setting (`[Tablet] SyncWithMouse` in `kcminputrc`).
-- **Relative Pen: Freeze Cursor Position on Supported App Sliders**: lets native apps freeze the pen
-  cursor, e.g. during a slider drag, and receive the motion themselves. It only does something in apps
-  that support it (see below).
+Tip: KDE's "sync tablet with mouse" setting (`kwriteconfig6 --file kcminputrc --group Tablet --key
+SyncWithMouse true --notify`) makes the mouse and the pen pick up from each other's cursor position.
 
 ## App cursor lock (for app developers)
 A Unix `SOCK_SEQPACKET` socket at `$XDG_RUNTIME_DIR/otd-relative-pen.sock`, one ASCII message per packet.

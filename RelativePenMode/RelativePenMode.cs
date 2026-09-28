@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Numerics;
@@ -46,8 +45,8 @@ namespace RelativePenMode
             get => SharedPen.Value;
         }
 
-        // OTD hands a new element list on every Save; whether our Filters-tab entries are
-        // in it are the on/off switches for the app cursor lock and hover-as-mouse.
+        // OTD hands a new element list on every Save; whether our Filters-tab entry is in
+        // it is the on/off switch for the app cursor lock.
         private object seenElements;
 
         protected override void OnOutput(IDeviceReport report)
@@ -56,57 +55,29 @@ namespace RelativePenMode
             {
                 seenElements = Elements;
                 CursorLock.SetAllowed(Elements?.Any(e => e is AppCursorLock) == true);
-                SharedPen.Value.SetHoverMouse(Elements?.Any(e => e is HoverMouse) == true);
             }
             base.OnOutput(report);
         }
     }
 
-    // The Filters-tab switch for hover-as-mouse (see RelativePen). Position None: never in the
-    // report pipeline, RelativePenMode just looks for it, like AppCursorLock.
-    [PluginName("Relative Pen: Act as Mouse While Hovering")]
-    public class HoverMouse : IPositionedPipelineElement<IDeviceReport>
-    {
-        public PipelinePosition Position => PipelinePosition.None;
-        public event Action<IDeviceReport> Emit;
-        public void Consume(IDeviceReport value) => Emit?.Invoke(value);
-    }
-
     // Deliberately NOT an IMouseButtonHandler, so Adaptive Bindings route the tip and
     // barrel buttons to pen actions instead of mouse clicks.
-    //
-    // Hover-as-mouse (Filters-tab switch): while the tip is up, motion goes out through a
-    // virtual MOUSE, so any app's pointer lock (browsers, games, Chisel's hover sliders)
-    // catches it. Wayland only ever locks a mouse. On tip-down the pen enters proximity where
-    // the cursor is (KWin's [Tablet] SyncWithMouse hands it the mouse position, and libinput
-    // zeroes the entering frame's delta), draws with pressure, and leaves again on tip-up.
-    // Pressure only exists while touching anyway, so nothing is lost.
     internal sealed class RelativePen : IRelativePointer, IPenActionHandler, IPressureHandler,
         ITiltHandler, IEraserHandler, ISynchronousPointer
     {
         public const string DeviceName = "OpenTabletDriver Relative Pen"; // "OpenTabletDriver*" = libinput quirk: smoothing off
-        public const string MouseName = "OpenTabletDriver Relative Pen (Hover Mouse)";
 
         // 1 px of accumulator = UnitsPerPx device units; libinput turns units into mm via
         // Resolution, then mm into logical px via * 96/25.4*2.5. 254/2400 mm * 9.449 = 1.000,
         // so OTD's sensitivity means the same here as in stock Relative Mode.
-        // The mouse matches it: 1 REL unit = 1 px, given the flat accel profile at speed 0
-        // (libinput filter-flat.c: factor = 1 + speed; no DPI hint = 1000, i.e. unscaled),
-        // which KdeRelative.MouseFlat sets on it.
         private const int UnitsPerPx = 254;
         private const int Resolution = 2400;           // units per mm
         private const double RangePx = 4_000_000;       // ~1e9 units, well inside int32
         private const int MaxPressure = ushort.MaxValue;
 
         private readonly EvdevDevice device;
-        private EvdevDevice mouse;                      // created the first time hover-as-mouse is on
         private double x = RangePx / 2, y = RangePx / 2;
-        private Vector2 mouseRemainder;                 // REL is whole px; carry the fraction
-        private bool eraser, hoverMouse, touching, penIn, penDirty, mouseDirty;
-        private int pressure, tiltX, tiltY;
-        // Which device and code a held button went out on, so its release follows it even
-        // if the pen switched between mouse and pen in between.
-        private readonly Dictionary<PenAction, (EvdevDevice Device, EventCode Code)> held = new();
+        private bool eraser;
 
         public unsafe RelativePen()
         {
@@ -118,8 +89,8 @@ namespace RelativePenMode
             device.EnableCustomCode(EventType.EV_ABS, EventCode.ABS_X, (IntPtr)(&xAbs));
             var yAbs = new input_absinfo { maximum = (int)(RangePx * UnitsPerPx), resolution = Resolution };
             device.EnableCustomCode(EventType.EV_ABS, EventCode.ABS_Y, (IntPtr)(&yAbs));
-            var pressureAbs = new input_absinfo { maximum = MaxPressure };
-            device.EnableCustomCode(EventType.EV_ABS, EventCode.ABS_PRESSURE, (IntPtr)(&pressureAbs));
+            var pressure = new input_absinfo { maximum = MaxPressure };
+            device.EnableCustomCode(EventType.EV_ABS, EventCode.ABS_PRESSURE, (IntPtr)(&pressure));
             var xTilt = new input_absinfo { minimum = -64, maximum = 63, resolution = 57 };
             device.EnableCustomCode(EventType.EV_ABS, EventCode.ABS_TILT_X, (IntPtr)(&xTilt));
             var yTilt = new input_absinfo { minimum = -64, maximum = 63, resolution = 57 };
@@ -145,20 +116,6 @@ namespace RelativePenMode
         ];
 
         private EventCode Tool => eraser ? EventCode.BTN_TOOL_RUBBER : EventCode.BTN_TOOL_PEN;
-        private bool AsPen => !hoverMouse || touching;
-
-        // From RelativePenMode on OTD's thread, like every other call here.
-        public void SetHoverMouse(bool on)
-        {
-            if (on && mouse == null)
-                mouse = CreateMouse();
-            on &= mouse != null;
-            if (on == hoverMouse) return;
-            hoverMouse = on;
-            Log.Write("Relative Pen Mode", on ? "Hover-as-mouse on" : "Hover-as-mouse off");
-            if (on && !touching && penIn)
-                PenOut();
-        }
 
         public void SetPosition(Vector2 delta)
         {
@@ -166,51 +123,26 @@ namespace RelativePenMode
             // Clamp is a backstop only: 4M px from centre is ~2 km of hand travel.
             x = Math.Clamp(x + delta.X, 0, RangePx);
             y = Math.Clamp(y + delta.Y, 0, RangePx);
-            if (AsPen)
-            {
-                device.Write(EventType.EV_KEY, Tool, 1);
-                device.Write(EventType.EV_ABS, EventCode.ABS_X, (int)Math.Round(x * UnitsPerPx));
-                device.Write(EventType.EV_ABS, EventCode.ABS_Y, (int)Math.Round(y * UnitsPerPx));
-                penIn = penDirty = true;
-            }
-            else
-            {
-                var d = delta + mouseRemainder;
-                var whole = new Vector2(MathF.Truncate(d.X), MathF.Truncate(d.Y));
-                mouseRemainder = d - whole;
-                if (whole.X != 0) mouse.Write(EventType.EV_REL, EventCode.REL_X, (int)whole.X);
-                if (whole.Y != 0) mouse.Write(EventType.EV_REL, EventCode.REL_Y, (int)whole.Y);
-                mouseDirty |= whole != Vector2.Zero;
-            }
+            device.Write(EventType.EV_KEY, Tool, 1);
+            device.Write(EventType.EV_ABS, EventCode.ABS_X, (int)Math.Round(x * UnitsPerPx));
+            device.Write(EventType.EV_ABS, EventCode.ABS_Y, (int)Math.Round(y * UnitsPerPx));
         }
 
-        // Pressure and tilt are remembered while hovering as a mouse and go out with the pen.
-        public void SetPressure(float percentage)
-        {
-            pressure = (int)(MaxPressure * Math.Clamp(percentage, 0f, 1f));
-            if (!AsPen) return;
-            device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, pressure);
-            penDirty = true;
-        }
+        public void SetPressure(float percentage) =>
+            device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, (int)(MaxPressure * Math.Clamp(percentage, 0f, 1f)));
 
         public void SetTilt(Vector2 tilt)
         {
-            (tiltX, tiltY) = ((int)tilt.X, (int)tilt.Y);
-            if (!AsPen) return;
-            device.Write(EventType.EV_ABS, EventCode.ABS_TILT_X, tiltX);
-            device.Write(EventType.EV_ABS, EventCode.ABS_TILT_Y, tiltY);
-            penDirty = true;
+            device.Write(EventType.EV_ABS, EventCode.ABS_TILT_X, (int)tilt.X);
+            device.Write(EventType.EV_ABS, EventCode.ABS_TILT_Y, (int)tilt.Y);
         }
 
         public void SetEraser(bool isEraser)
         {
             if (eraser == isEraser)
                 return;
-            if (penIn)
-            {
-                device.Write(EventType.EV_KEY, Tool, 0);   // old tool leaves before the new one enters
-                device.Sync();
-            }
+            device.Write(EventType.EV_KEY, Tool, 0);   // old tool leaves before the new one enters
+            device.Sync();
             eraser = isEraser;
         }
 
@@ -221,122 +153,35 @@ namespace RelativePenMode
 
         private void SetAction(PenAction action, int state)
         {
-            if (action is PenAction.Tip or PenAction.Eraser)
+            EventCode? code = action switch
             {
-                if (state == 1)
-                {
-                    touching = true;
-                    if (!penIn) PenIn();
-                    device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, pressure);
-                }
-                device.Write(EventType.EV_KEY, EventCode.BTN_TOUCH, state);
-                device.Sync();
-                if (state == 0)
-                {
-                    touching = false;
-                    if (hoverMouse) PenOut();
-                }
-                return;
-            }
-
-            if (state == 0)
-            {
-                if (held.Remove(action, out var h))
-                {
-                    h.Device.Write(EventType.EV_KEY, h.Code, 0);
-                    h.Device.Sync();
-                }
-                return;
-            }
-            // While hovering as a mouse the barrel buttons are mouse buttons, mapped the way
-            // libinput maps pen buttons: STYLUS2 = right, STYLUS = middle.
-            EventCode? code = (action, AsPen) switch
-            {
-                (PenAction.BarrelButton1, true) => EventCode.BTN_STYLUS2,   // matches Artist Mode: button 1 = right click
-                (PenAction.BarrelButton2, true) => EventCode.BTN_STYLUS,
-                (PenAction.BarrelButton3, true) => EventCode.BTN_STYLUS3,
-                (PenAction.BarrelButton1, false) => EventCode.BTN_RIGHT,
-                (PenAction.BarrelButton2, false) => EventCode.BTN_MIDDLE,
-                (PenAction.BarrelButton3, false) => EventCode.BTN_SIDE,
+                PenAction.Tip or PenAction.Eraser => EventCode.BTN_TOUCH,
+                PenAction.BarrelButton1 => EventCode.BTN_STYLUS2,   // matches Artist Mode: button 1 = right click
+                PenAction.BarrelButton2 => EventCode.BTN_STYLUS,
+                PenAction.BarrelButton3 => EventCode.BTN_STYLUS3,
                 _ => null,
             };
             if (code is { } c)
             {
-                var dev = AsPen ? device : mouse;
-                held[action] = (dev, c);
-                dev.Write(EventType.EV_KEY, c, 1);
-                dev.Sync();
+                device.Write(EventType.EV_KEY, c, state);
+                device.Sync();
             }
         }
 
-        // Enter proximity at the current (hidden) position, in a frame of its own with zero
-        // pressure, so the touch that follows lands where KWin put the cursor.
-        private void PenIn()
-        {
-            device.Write(EventType.EV_KEY, Tool, 1);
-            device.Write(EventType.EV_ABS, EventCode.ABS_X, (int)Math.Round(x * UnitsPerPx));
-            device.Write(EventType.EV_ABS, EventCode.ABS_Y, (int)Math.Round(y * UnitsPerPx));
-            device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, 0);
-            device.Write(EventType.EV_ABS, EventCode.ABS_TILT_X, tiltX);
-            device.Write(EventType.EV_ABS, EventCode.ABS_TILT_Y, tiltY);
-            device.Sync();
-            penIn = true;
-        }
-
-        private void PenOut()
-        {
-            foreach (var key in Keys)
-                device.Write(EventType.EV_KEY, key, 0);
-            device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, 0);
-            device.Sync();
-            penIn = penDirty = false;
-        }
-
         // Pen left the tablet: go out of proximity and recentre. Safe to jump here —
-        // libinput reports a zero delta for the entering-proximity frame, and KWin
-        // places a relative tool from its own state (or the mouse's, with SyncWithMouse).
+        // KWin doesn't warp a relative tool on proximity-in, and libinput reports a
+        // zero delta for the entering-proximity frame.
         public void Reset()
         {
             foreach (var key in Keys)
                 device.Write(EventType.EV_KEY, key, 0);
             device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, 0);
-            penDirty = true;
-            penIn = touching = eraser = false;
-            foreach (var (dev, code) in held.Values)
-                if (dev == mouse)
-                {
-                    mouse.Write(EventType.EV_KEY, code, 0);
-                    mouseDirty = true;
-                }
-            held.Clear();
+            eraser = false;
             x = y = RangePx / 2;
-            mouseRemainder = Vector2.Zero;
             CursorLock.PenLeft();
         }
 
-        public void Flush()
-        {
-            if (penDirty) device.Sync();
-            if (mouseDirty) mouse.Sync();
-            penDirty = mouseDirty = false;
-        }
-
-        private static EvdevDevice CreateMouse()
-        {
-            var m = new EvdevDevice(MouseName);
-            m.EnableTypeCodes(EventType.EV_REL, EventCode.REL_X, EventCode.REL_Y);
-            m.EnableTypeCodes(EventType.EV_KEY, EventCode.BTN_LEFT, EventCode.BTN_RIGHT, EventCode.BTN_MIDDLE, EventCode.BTN_SIDE);
-            var result = m.Initialize();
-            if (result != ERRNO.NONE)
-            {
-                Log.WriteNotify("Relative Pen Mode", $"Failed to create hover mouse (error {result})", LogLevel.Error);
-                return null;
-            }
-            Log.Write("Relative Pen Mode", $"Virtual mouse '{MouseName}' created");
-            Task.Run(KdeRelative.MouseFlat);
-            Task.Run(KdeRelative.EnsureSyncWithMouse);
-            return m;
-        }
+        public void Flush() => device.Sync();
     }
 
     // Turns on KWin's relative mode for our pen, so installing the plugin is the whole
@@ -345,46 +190,9 @@ namespace RelativePenMode
     // D-Bus library, so the plugin stays a single DLL. Non-KDE desktops: logs and gives up.
     internal static class KdeRelative
     {
-        private const string Svc = "org.kde.KWin", Root = "/org/kde/KWin/InputDevice", Iface = "org.kde.KWin.InputDevice";
+        private const string Svc = "org.kde.KWin", Root = "/org/kde/KWin/InputDevice";
 
         public static void Enable()
-        {
-            if (Find(RelativePen.DeviceName) is not { } dev)
-                return;
-            var ok = Set(dev, "tabletToolIsRelative", "b", "true");
-            Log.Write("Relative Pen Mode", ok
-                ? $"KDE relative mode enabled on {dev}"
-                : "Could not enable KDE relative mode", ok ? LogLevel.Info : LogLevel.Warning);
-        }
-
-        // Hover mouse: flat acceleration at speed 0, so it moves 1:1 like the pen, whatever
-        // the user's mouse settings are.
-        public static void MouseFlat()
-        {
-            if (Find(RelativePen.MouseName) is not { } dev)
-                return;
-            var ok = Set(dev, "pointerAccelerationProfileFlat", "b", "true")
-                && Set(dev, "pointerAcceleration", "d", "0");
-            Log.Write("Relative Pen Mode", ok
-                ? $"Hover mouse set to flat acceleration on {dev}"
-                : "Could not set flat acceleration on the hover mouse", ok ? LogLevel.Info : LogLevel.Warning);
-        }
-
-        // Hover-as-mouse needs KWin to hand the pen the mouse's position on proximity-in, or
-        // strokes would start where the pen last was. A global KDE setting ([Tablet]
-        // SyncWithMouse); KWin watches the file, so --notify applies it live.
-        public static void EnsureSyncWithMouse()
-        {
-            if (Run("kreadconfig6", "--file", "kcminputrc", "--group", "Tablet", "--key", "SyncWithMouse")?.Trim() == "true")
-                return;
-            var ok = Run("kwriteconfig6", "--file", "kcminputrc", "--group", "Tablet", "--key", "SyncWithMouse", "true", "--notify") != null;
-            Log.Write("Relative Pen Mode", ok
-                ? "KDE 'sync tablet with mouse' turned on (needed by hover-as-mouse)"
-                : "Could not turn on KDE's [Tablet] SyncWithMouse; strokes may start off-cursor", ok ? LogLevel.Info : LogLevel.Warning);
-        }
-
-        // KWin's sysname (eventNN) for the device with exactly this name, or null.
-        private static string Find(string deviceName)
         {
             // The device shows up in KWin a moment after uinput creates it.
             for (int attempt = 0; attempt < 40; attempt++)
@@ -394,30 +202,31 @@ namespace RelativePenMode
                 if (list == null)
                 {
                     if (attempt == 0) continue;
-                    Log.Write("Relative Pen Mode", $"KWin not reachable; can't configure '{deviceName}' (KDE only)", LogLevel.Warning);
-                    return null;
+                    Log.Write("Relative Pen Mode", "KWin not reachable; set relative mode for the pen manually (KDE only)", LogLevel.Warning);
+                    return;
                 }
                 foreach (Match m in Regex.Matches(list, "\"([^\"]+)\""))
                 {
-                    var name = Busctl("get-property", Svc, $"{Root}/{m.Groups[1].Value}", Iface, "name");
-                    if (name != null && name.Contains($"\"{deviceName}\""))
-                        return m.Groups[1].Value;
+                    var path = $"{Root}/{m.Groups[1].Value}";
+                    var name = Busctl("get-property", Svc, path, "org.kde.KWin.InputDevice", "name");
+                    if (name == null || !name.Contains($"\"{RelativePen.DeviceName}\""))
+                        continue;
+                    var ok = Busctl("set-property", Svc, path, "org.kde.KWin.InputDevice", "tabletToolIsRelative", "b", "true") != null;
+                    Log.Write("Relative Pen Mode", ok
+                        ? $"KDE relative mode enabled on {m.Groups[1].Value}"
+                        : "Could not enable KDE relative mode", ok ? LogLevel.Info : LogLevel.Warning);
+                    return;
                 }
             }
-            Log.Write("Relative Pen Mode", $"'{deviceName}' never appeared in KWin; not configured", LogLevel.Warning);
-            return null;
+            Log.Write("Relative Pen Mode", "Virtual pen never appeared in KWin; relative mode not set", LogLevel.Warning);
         }
 
-        private static bool Set(string dev, string property, string type, string value) =>
-            Busctl("set-property", Svc, $"{Root}/{dev}", Iface, property, type, value) != null;
-
-        private static string Busctl(params string[] args) => Run("busctl", ["--user", .. args]);
-
-        private static string Run(string program, params string[] args)
+        private static string Busctl(params string[] args)
         {
             try
             {
-                var psi = new ProcessStartInfo(program) { RedirectStandardOutput = true, RedirectStandardError = true };
+                var psi = new ProcessStartInfo("busctl") { RedirectStandardOutput = true, RedirectStandardError = true };
+                psi.ArgumentList.Add("--user");
                 foreach (var a in args) psi.ArgumentList.Add(a);
                 using var p = Process.Start(psi);
                 var output = p.StandardOutput.ReadToEnd();
