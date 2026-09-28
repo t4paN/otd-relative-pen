@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Must match the installed daemon: OTD 0.6.7 targets net8.0. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>RelativePenMode</AssemblyName>
+    <DebugType>none</DebugType>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Compile against the plugin API of the exact tag that's installed; the
+         daemon supplies the assembly at runtime, so don't ship a copy. -->
+    <ProjectReference Include="../ref-otd/OpenTabletDriver.Plugin/OpenTabletDriver.Plugin.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+    <!-- Evdev/uinput wrapper for our own virtual pen; also supplied by the daemon. -->
+    <ProjectReference Include="../ref-otd/OpenTabletDriver.Native/OpenTabletDriver.Native.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

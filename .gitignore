@@ -1,0 +1,8 @@
+# Build output
+bin/
+obj/
+
+# Upstream source checkouts, read for reference only (OTD v0.6.7, KWin 6.7.5,
+# libinput 1.32.0, Hover Distance Limiter). The csproj compiles against ref-otd;
+# before publishing, turn that into a git submodule pinned to v0.6.7.
+ref-*/
