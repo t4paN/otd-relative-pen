@@ -9,3 +9,6 @@ ref-*/
 
 # Claude Code notes, kept local
 CLAUDE.md
+
+# Local test tool for the app cursor lock, not published
+locktest.py

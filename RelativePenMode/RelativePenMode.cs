@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Numerics;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -11,6 +12,7 @@ using OpenTabletDriver.Plugin;
 using OpenTabletDriver.Plugin.Attributes;
 using OpenTabletDriver.Plugin.Output;
 using OpenTabletDriver.Plugin.Platform.Pointer;
+using OpenTabletDriver.Plugin.Tablet;
 
 namespace RelativePenMode
 {
@@ -41,6 +43,20 @@ namespace RelativePenMode
         {
             set => throw new NotSupportedException();
             get => SharedPen.Value;
+        }
+
+        // OTD hands a new element list on every Save; whether our Filters-tab entry is in
+        // it is the on/off switch for the app cursor lock.
+        private object seenElements;
+
+        protected override void OnOutput(IDeviceReport report)
+        {
+            if (!ReferenceEquals(Elements, seenElements))
+            {
+                seenElements = Elements;
+                CursorLock.SetAllowed(Elements?.Any(e => e is AppCursorLock) == true);
+            }
+            base.OnOutput(report);
         }
     }
 
@@ -87,6 +103,7 @@ namespace RelativePenMode
             {
                 Log.Write("Relative Pen Mode", $"Virtual pen '{DeviceName}' created");
                 Task.Run(KdeRelative.Enable);
+                CursorLock.Start();
             }
             else
                 Log.WriteNotify("Relative Pen Mode", $"Failed to create virtual pen (error {result}); is uinput loaded?", LogLevel.Error);
@@ -102,6 +119,7 @@ namespace RelativePenMode
 
         public void SetPosition(Vector2 delta)
         {
+            delta = CursorLock.Divert(delta);   // zero while an app holds the cursor lock
             // Clamp is a backstop only: 4M px from centre is ~2 km of hand travel.
             x = Math.Clamp(x + delta.X, 0, RangePx);
             y = Math.Clamp(y + delta.Y, 0, RangePx);
@@ -160,6 +178,7 @@ namespace RelativePenMode
             device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, 0);
             eraser = false;
             x = y = RangePx / 2;
+            CursorLock.PenLeft();
         }
 
         public void Flush() => device.Sync();
