@@ -1,34 +1,73 @@
-# Relative Pen Mode — OpenTabletDriver plugin
+# Relative Pen Mode
 
-Mouse-style (relative) pen movement that **stays a pen**, so pressure, tilt and pen
-buttons reach every app (Krita, browsers, Chisel). KDE Plasma on Wayland only.
+An [OpenTabletDriver](https://github.com/OpenTabletDriver/OpenTabletDriver) output mode for **KDE Plasma
+on Wayland**: relative, mouse-style motion that stays a **pen**, so pressure, tilt and pen buttons still
+reach every app (Krita, browsers, and so on).
 
-Stock OTD Relative Mode drives a virtual *mouse*, so apps never see pressure. This
-output mode feeds OTD's relative motion (same Sensitivity / Rotation / Reset delay
-fields in the Output tab) into its own virtual pen, **"OpenTabletDriver Relative
-Pen"**, and turns on KWin's per-device relative mode for it (via `busctl --user`).
-KWin then owns the cursor, so switching between mouse and pen never jumps it.
+Stock Relative Mode drives a virtual *mouse*, so apps never see pressure. Artist Mode keeps pressure,
+but it's absolute. This plugin does both at once.
+
+## Requirements
+- Linux with **KDE Plasma 6 on Wayland**. It relies on KWin's per-device relative tablet mode, so GNOME,
+  X11, Windows and macOS won't work.
+- OpenTabletDriver **0.6.7**.
+- Any tablet OTD supports. Tested on a One by Wacom CTL-672. Tilt is untested, so reports are welcome.
 
 ## Install
-1. Drop `RelativePenMode.dll` into `~/.config/OpenTabletDriver/Plugins/Relative Pen Mode/`
-   and restart the daemon (`systemctl --user restart opentabletdriver`).
-2. Output tab → **Relative Pen Mode** → **Save**.
+1. Build it (below), or grab `RelativePenMode.dll` from a release.
+2. Copy it to `~/.config/OpenTabletDriver/Plugins/Relative Pen Mode/`.
+3. Restart OTD (`systemctl --user restart opentabletdriver`).
+4. In the OTD window: **Output** tab → pick **Relative Pen Mode** → **Save**.
 
-That's the whole setup. Sensitivity numbers mean the same as in stock Relative Mode.
+That's all. The plugin sets up KDE by itself. The usual Output-tab fields (Sensitivity, Rotation, Reset
+Time) work the same as in stock Relative Mode.
+
+## Optional extras (Filters tab)
+Tick one, then click **Save**.
+
+- **Relative Pen: Act as Mouse While Hovering** *(new)*: while the tip is up, the pen moves the cursor as
+  a mouse. Touch down and it becomes a pen, right under the cursor, with pressure. The point is that
+  **pointer lock works in every app**, including browsers and games; Wayland only ever locks a mouse. The
+  hover mouse always runs flat (no acceleration), 1:1 with the pen. This turns on KDE's "sync tablet with
+  mouse" setting (`[Tablet] SyncWithMouse` in `kcminputrc`).
+- **Relative Pen: Freeze Cursor Position on Supported App Sliders**: lets native apps freeze the pen
+  cursor, e.g. during a slider drag, and receive the motion themselves. It only does something in apps
+  that support it (see below).
+
+## App cursor lock (for app developers)
+A Unix `SOCK_SEQPACKET` socket at `$XDG_RUNTIME_DIR/otd-relative-pen.sock`, one ASCII message per packet.
+
+| Direction | Messages |
+|---|---|
+| plugin → app | `hello 1` on connect |
+| app → plugin | `lock`, `unlock` |
+| plugin → app | `locked` · `denied no-pen\|off\|busy` · `motion <dx> <dy>` (logical px, one per tablet report) · `unlocked request\|out-of-range\|timeout\|off` |
+
+While locked, the cursor stays put and the motion comes to you instead. A lock always ends when your
+connection closes, the pen leaves the tablet, the filter is unticked, or 60 s pass. If the socket is
+missing, the feature isn't available.
 
 ## Build
-Requires the .NET 8 SDK and OTD's source at tag **v0.6.7** in `ref-otd/`:
+```bash
+git clone --recursive https://github.com/t4paN/otd-relative-pen
+cd otd-relative-pen/RelativePenMode
+dotnet build -c Release        # .NET 8 SDK → bin/Release/net8.0/RelativePenMode.dll
 ```
-git clone --depth 1 --branch v0.6.7 https://github.com/OpenTabletDriver/OpenTabletDriver.git ref-otd
-cd RelativePenMode && dotnet build -c Release
-```
+`ref-otd` is OTD's source pinned to v0.6.7 (a submodule); the plugin compiles against it.
 
-## Why its own pen (the units)
-KWin's relative tablet mode moves the cursor by libinput's tablet delta, which the
-flat pen filter computes as `mm * 96/25.4*2.5` (≈9.45 px per mm). OTD's Artist-Mode
-pen declares 1 screen px = 0.01 mm, so reused as-is the cursor crawls at ~1/10 speed
-and its screen-sized range is only ~250 cursor px of travel. This pen declares
-254 units/px at 2400 units/mm, i.e. exactly 1 px = 1 cursor px, with a 4M px range.
+`relpen.sh on|off|status` is the author's helper for switching between this mode and stock Relative Mode.
+`off` restores a settings backup you'd need to have made yourself.
 
-## Helper
-`relpen.sh on|off|status` switches between this mode and stock Relative Mode.
+## How it works
+It feeds OTD's relative motion into its own virtual pen, **"OpenTabletDriver Relative Pen"**, and turns
+on KWin's per-device relative mode for it (via `busctl --user`). KWin then moves the cursor by the pen's
+deltas.
+
+Why its own pen, and not OTD's Artist-Mode one: KWin's relative mode moves the cursor by libinput's
+tablet delta, which the flat pen filter computes as `mm * 96/25.4*2.5` (≈9.45 px per mm). OTD's
+Artist-Mode pen declares 1 screen px = 0.01 mm, so reused as-is the cursor crawls at ~1/10 speed, and its
+screen-sized range gives only ~250 cursor px of travel. This pen declares 254 units/px at 2400 units/mm,
+exactly 1 px = 1 cursor px, with a 4M px range, so the edge is never reached.
+
+## License
+LGPL-3.0-or-later, like OpenTabletDriver.
