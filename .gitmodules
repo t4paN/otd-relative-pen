@@ -1,0 +1,3 @@
+[submodule "ref-otd"]
+	path = ref-otd
+	url = https://github.com/OpenTabletDriver/OpenTabletDriver.git
