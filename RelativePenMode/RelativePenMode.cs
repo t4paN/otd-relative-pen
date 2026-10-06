@@ -46,7 +46,7 @@ namespace RelativePenMode
         }
 
         // OTD hands a new element list on every Save; whether our Filters-tab entries are in
-        // it are the on/off switches for the app cursor lock, absolute pen and mouse mode key.
+        // it are the on/off switches for the app cursor lock, absolute pen and mouse on demand key.
         private object seenElements;
 
         protected override void OnOutput(IDeviceReport report)
@@ -58,8 +58,8 @@ namespace RelativePenMode
                 var pen = SharedPen.Value;
                 CursorLock.SetAllowed(Has<AppCursorLock>());
                 pen.SetAbsolute(Has<AbsoluteWithMouse>(), Tablet?.Properties.Specifications.Digitizer);
-                pen.SetMouseModeAllowed(Has<HoldForMouse>() || Has<AbsoluteWithMouse>());
-                MouseModeKey.SetToggle(Has<ToggleMouse>());
+                pen.SetMouseOnDemandAllowed(Has<HoldForMouse>() || Has<AbsoluteWithMouse>());
+                MouseOnDemandKey.SetToggle(Has<ToggleMouse>());
             }
             base.OnOutput(report);
         }
@@ -76,7 +76,7 @@ namespace RelativePenMode
     // Deliberately NOT an IMouseButtonHandler, so Adaptive Bindings route the tip and
     // barrel buttons to pen actions instead of mouse clicks.
     //
-    // Mouse mode (MouseModeKey held): the pen leaves proximity and the same deltas drive a
+    // Mouse on demand (MouseOnDemandKey held): the pen leaves proximity and the same deltas drive a
     // flat virtual mouse; tip = left, barrel 1 = right, barrel 2 = middle. It flips only with
     // the tip and buttons up, so a press and its release always go to the same device. Back
     // to pen, the next report is a proximity-in where the cursor is (KWin's [Tablet]
@@ -85,13 +85,13 @@ namespace RelativePenMode
     // Absolute pen (AbsoluteWithMouse ticked): a second virtual pen that KWin leaves absolute,
     // fed the raw tablet position with the tablet's own range and resolution, so KWin maps
     // the tablet to the screen like any real tablet (System Settings > Drawing Tablet can
-    // change the mapping). Mouse mode works the same on top of it. The app cursor lock
+    // change the mapping). Mouse on demand works the same on top of it. The app cursor lock
     // doesn't apply to it: an absolute pen's position is the hand's, it can't be frozen.
     internal sealed class RelativePen : IRelativePointer, IPenActionHandler, IPressureHandler,
         ITiltHandler, IEraserHandler, ISynchronousPointer
     {
         public const string DeviceName = "OpenTabletDriver Relative Pen"; // "OpenTabletDriver*" = libinput quirk: smoothing off
-        public const string MouseName = "OpenTabletDriver Relative Pen (Mouse Mode)";
+        public const string MouseName = "OpenTabletDriver Relative Pen (Mouse on Demand)";
         public const string AbsoluteName = "OpenTabletDriver Absolute Pen";
 
         // 1 px of accumulator = UnitsPerPx device units; libinput turns units into mm via
@@ -113,9 +113,9 @@ namespace RelativePenMode
         public Vector2 TabletPosition;                  // raw, from RelativePenMode.Transform
         private double x = RangePx / 2, y = RangePx / 2;
         private bool eraser;
-        private EvdevDevice mouse;                      // created the first time mouse mode is allowed
+        private EvdevDevice mouse;                      // created the first time mouse on demand is allowed
         private Vector2 mouseRemainder;                 // REL is whole px; carry the fraction
-        private bool mouseMode, touching, penDirty, mouseDirty;
+        private bool mouseOnDemand, touching, penDirty, mouseDirty;
         private int buttonsDown;
 
         public RelativePen()
@@ -126,7 +126,7 @@ namespace RelativePenMode
                 return;
             Task.Run(() => KdeRelative.SetRelative(DeviceName, true));
             CursorLock.Start();
-            MouseModeKey.Start();
+            MouseOnDemandKey.Start();
         }
 
         private static unsafe EvdevDevice CreatePen(string name, int maxX, int maxY, int resX, int resY)
@@ -181,7 +181,7 @@ namespace RelativePenMode
             }
             on &= absPen != null;
             if (on == absolute) return;
-            if (!mouseMode) PenOut();
+            if (!mouseOnDemand) PenOut();
             absolute = on;
             touching = false;
             buttonsDown = 0;
@@ -189,27 +189,27 @@ namespace RelativePenMode
             Log.Write("Relative Pen Mode", on ? "Absolute pen on" : "Absolute pen off");
         }
 
-        public void SetMouseModeAllowed(bool on)
+        public void SetMouseOnDemandAllowed(bool on)
         {
             if (on && mouse == null)
                 mouse = CreateMouse();
-            MouseModeKey.SetAllowed(on && mouse != null);
+            MouseOnDemandKey.SetAllowed(on && mouse != null);
         }
 
         public void SetPosition(Vector2 delta)
         {
-            MouseModeKey.PenEntered();
-            var wantMouse = MouseModeKey.Wanted && mouse != null;
-            if (wantMouse != mouseMode && !touching && buttonsDown == 0)
+            MouseOnDemandKey.PenEntered();
+            var wantMouse = MouseOnDemandKey.Wanted && mouse != null;
+            if (wantMouse != mouseOnDemand && !touching && buttonsDown == 0)
             {
-                mouseMode = wantMouse;
-                if (mouseMode)
+                mouseOnDemand = wantMouse;
+                if (mouseOnDemand)
                 {
                     PenOut();
                     CursorLock.PenLeft();   // ends an app's lock; no reports reach it while mouse
                 }
             }
-            if (mouseMode)
+            if (mouseOnDemand)
             {
                 var d = delta + mouseRemainder;
                 var whole = new Vector2(MathF.Truncate(d.X), MathF.Truncate(d.Y));
@@ -241,14 +241,14 @@ namespace RelativePenMode
 
         public void SetPressure(float percentage)
         {
-            if (mouseMode) return;
+            if (mouseOnDemand) return;
             device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, (int)(MaxPressure * Math.Clamp(percentage, 0f, 1f)));
             penDirty = true;
         }
 
         public void SetTilt(Vector2 tilt)
         {
-            if (mouseMode) return;
+            if (mouseOnDemand) return;
             device.Write(EventType.EV_ABS, EventCode.ABS_TILT_X, (int)tilt.X);
             device.Write(EventType.EV_ABS, EventCode.ABS_TILT_Y, (int)tilt.Y);
             penDirty = true;
@@ -258,7 +258,7 @@ namespace RelativePenMode
         {
             if (eraser == isEraser)
                 return;
-            if (!mouseMode)
+            if (!mouseOnDemand)
             {
                 device.Write(EventType.EV_KEY, Tool, 0);   // old tool leaves before the new one enters
                 device.Sync();
@@ -274,7 +274,7 @@ namespace RelativePenMode
         private void SetAction(PenAction action, int state)
         {
             // Mouse buttons mapped the way libinput maps pen buttons: STYLUS2 = right, STYLUS = middle.
-            EventCode? code = (action, mouseMode) switch
+            EventCode? code = (action, mouseOnDemand) switch
             {
                 (PenAction.Tip or PenAction.Eraser, false) => EventCode.BTN_TOUCH,
                 (PenAction.BarrelButton1, false) => EventCode.BTN_STYLUS2,   // matches Artist Mode: button 1 = right click
@@ -292,7 +292,7 @@ namespace RelativePenMode
                 touching = state == 1;
             else
                 buttonsDown = Math.Max(0, buttonsDown + (state == 1 ? 1 : -1));
-            var dev = mouseMode ? mouse : device;
+            var dev = mouseOnDemand ? mouse : device;
             dev.Write(EventType.EV_KEY, c, state);
             dev.Sync();
         }
@@ -309,14 +309,14 @@ namespace RelativePenMode
         // Pen left the tablet: go out of proximity and recentre. Safe to jump here —
         // KWin doesn't warp a relative tool on proximity-in, and libinput reports a
         // zero delta for the entering-proximity frame.
-        // Mouse mode outlives the lift while the key is held: lifting is how a mouse repositions.
+        // Mouse on demand outlives the lift while the key is held: lifting is how a mouse repositions.
         public void Reset()
         {
             foreach (var key in Keys)
                 device.Write(EventType.EV_KEY, key, 0);
             device.Write(EventType.EV_ABS, EventCode.ABS_PRESSURE, 0);
             penDirty = true;
-            if (mouseMode)
+            if (mouseOnDemand)
             {
                 foreach (var b in MouseButtons)
                     mouse.Write(EventType.EV_KEY, b, 0);
@@ -327,7 +327,7 @@ namespace RelativePenMode
             x = y = RangePx / 2;
             mouseRemainder = Vector2.Zero;
             CursorLock.PenLeft();
-            MouseModeKey.PenLeft();
+            MouseOnDemandKey.PenLeft();
         }
 
         public void Flush()
@@ -348,7 +348,7 @@ namespace RelativePenMode
             var result = m.Initialize();
             if (result != ERRNO.NONE)
             {
-                Log.WriteNotify("Relative Pen Mode", $"Failed to create the mouse-mode mouse (error {result})", LogLevel.Error);
+                Log.WriteNotify("Relative Pen Mode", $"Failed to create the mouse-on-demand mouse (error {result})", LogLevel.Error);
                 return null;
             }
             Log.Write("Relative Pen Mode", $"Virtual mouse '{MouseName}' created");
@@ -378,7 +378,7 @@ namespace RelativePenMode
                 : $"Could not set KDE {mode} mode on '{deviceName}'", ok ? LogLevel.Info : LogLevel.Warning);
         }
 
-        // Mouse-mode mouse: flat acceleration at speed 0, so it moves 1:1 like the pen, whatever
+        // Mouse-on-demand mouse: flat acceleration at speed 0, so it moves 1:1 like the pen, whatever
         // the user's mouse settings are.
         public static void MouseFlat()
         {
@@ -387,11 +387,11 @@ namespace RelativePenMode
             var ok = Set(dev, "pointerAccelerationProfileFlat", "b", "true")
                 && Set(dev, "pointerAcceleration", "d", "0");
             Log.Write("Relative Pen Mode", ok
-                ? $"Mouse-mode mouse set to flat acceleration on {dev}"
-                : "Could not set flat acceleration on the mouse-mode mouse", ok ? LogLevel.Info : LogLevel.Warning);
+                ? $"Mouse-on-demand mouse set to flat acceleration on {dev}"
+                : "Could not set flat acceleration on the mouse-on-demand mouse", ok ? LogLevel.Info : LogLevel.Warning);
         }
 
-        // Mouse mode needs KWin to hand the pen the mouse's position on proximity-in, or
+        // Mouse on demand needs KWin to hand the pen the mouse's position on proximity-in, or
         // strokes would start where the pen last was. A global KDE setting ([Tablet]
         // SyncWithMouse); KWin watches the file, so --notify applies it live.
         public static void EnsureSyncWithMouse()
@@ -400,7 +400,7 @@ namespace RelativePenMode
                 return;
             var ok = Run("kwriteconfig6", "--file", "kcminputrc", "--group", "Tablet", "--key", "SyncWithMouse", "true", "--notify") != null;
             Log.Write("Relative Pen Mode", ok
-                ? "KDE 'sync tablet with mouse' turned on (needed by mouse mode)"
+                ? "KDE 'sync tablet with mouse' turned on (needed by mouse on demand)"
                 : "Could not turn on KDE's [Tablet] SyncWithMouse; strokes may start off-cursor", ok ? LogLevel.Info : LogLevel.Warning);
         }
 

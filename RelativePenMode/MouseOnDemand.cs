@@ -8,11 +8,11 @@ using OpenTabletDriver.Plugin.Tablet;
 
 namespace RelativePenMode
 {
-    // Filters-tab switches for mouse mode. Opt-in, because the key it grabs (Space by default)
+    // Filters-tab switches for mouse on demand. Opt-in, because the key it grabs (Space by default)
     // stops typing while the pen is near the tablet. Position None: never in the report
     // pipeline, RelativePenMode just looks for them, like AppCursorLock. The settings file
     // stores the class names, so the display names can change freely.
-    [PluginName("Relative Pen: Mouse Mode on Shortcut (default Space)")]
+    [PluginName("Relative Pen: Mouse on Demand (default Space)")]
     public class HoldForMouse : IPositionedPipelineElement<IDeviceReport>
     {
         public PipelinePosition Position => PipelinePosition.None;
@@ -20,9 +20,9 @@ namespace RelativePenMode
         public void Consume(IDeviceReport value) => Emit?.Invoke(value);
     }
 
-    // The pen goes absolute (tablet area = screen, like Artist Mode), with the same mouse mode
+    // The pen goes absolute (tablet area = screen, like Artist Mode), with the same mouse on demand
     // on the shortcut. Implies HoldForMouse.
-    [PluginName("Relative Pen: Absolute Pen + Mouse Mode on Shortcut (default Space)")]
+    [PluginName("Relative Pen: Absolute Pen + Mouse on Demand (default Space)")]
     public class AbsoluteWithMouse : IPositionedPipelineElement<IDeviceReport>
     {
         public PipelinePosition Position => PipelinePosition.None;
@@ -31,7 +31,7 @@ namespace RelativePenMode
     }
 
     // Press once = mouse, press again = pen, instead of holding the key.
-    [PluginName("Relative Pen: Mouse Mode Shortcut Toggles Instead of Hold")]
+    [PluginName("Relative Pen: Mouse on Demand Toggles Instead of Hold")]
     public class ToggleMouse : IPositionedPipelineElement<IDeviceReport>
     {
         public PipelinePosition Position => PipelinePosition.None;
@@ -55,11 +55,12 @@ namespace RelativePenMode
     // mode ends with it, so a pen put away comes back as a pen.
     //
     // D-Bus via busctl/gdbus subprocesses, like KdeRelative, so the plugin stays one DLL.
-    internal static class MouseModeKey
+    internal static class MouseOnDemandKey
     {
         private const string Svc = "org.kde.kglobalaccel", Accel = "org.kde.KGlobalAccel";
+        // The action id predates the "Mouse on demand" name; changing it would orphan the user's binding.
         private const string Component = "otd-relative-pen", Action = "mouse-mode";
-        private static readonly string[] ActionId = [Component, Action, "OpenTabletDriver Relative Pen", "Mouse mode (hold)"];
+        private static readonly string[] ActionId = [Component, Action, "OpenTabletDriver Relative Pen", "Mouse on demand"];
         private const string DefaultKey = "32";            // Qt::Key_Space
         private const string IsDefault = "8", SetPresent = "2";   // KGlobalAccel::SetShortcutFlag
         private static readonly TimeSpan Grace = TimeSpan.FromSeconds(2);
@@ -70,7 +71,7 @@ namespace RelativePenMode
         private static long penLeftAt;
         private static Process monitor;
 
-        // True while mouse mode is wanted (key held, or toggled on); read by the pen on OTD's thread.
+        // True while mouse on demand is wanted (key held, or toggled on); read by the pen on OTD's thread.
         public static bool Wanted => wanted;
 
         public static void Start()
@@ -162,10 +163,10 @@ namespace RelativePenMode
                         && Call("setShortcut", "asaiu", [.. Ids(), "1", DefaultKey, IsDefault]) != null;
                     if (!registered)
                     {
-                        Log.Write("Relative Pen Mode", "KDE global shortcuts not reachable; mouse mode key unavailable (KDE only)", LogLevel.Warning);
+                        Log.Write("Relative Pen Mode", "KDE global shortcuts not reachable; mouse on demand key unavailable (KDE only)", LogLevel.Warning);
                         return;
                     }
-                    Log.Write("Relative Pen Mode", "Mouse mode key registered (default Space; rebind in System Settings > Shortcuts)");
+                    Log.Write("Relative Pen Mode", "Mouse on demand key registered (default Space; rebind in System Settings > Shortcuts)");
                 }
                 // SetPresent without NoAutoloading: KDE keeps whatever key the user chose.
                 var ok = want
@@ -204,14 +205,14 @@ namespace RelativePenMode
                 }
                 catch (System.ComponentModel.Win32Exception)
                 {
-                    Log.Write("Relative Pen Mode", "gdbus not found; mouse mode key unavailable", LogLevel.Warning);
+                    Log.Write("Relative Pen Mode", "gdbus not found; mouse on demand key unavailable", LogLevel.Warning);
                     return;
                 }
                 catch (Exception e)
                 {
-                    Log.Write("Relative Pen Mode", $"Mouse mode key listener failed: {e.Message}", LogLevel.Warning);
+                    Log.Write("Relative Pen Mode", $"Mouse on demand key listener failed: {e.Message}", LogLevel.Warning);
                 }
-                lock (gate) wanted = false;   // a release may have been missed; never leave mouse mode stuck on
+                lock (gate) wanted = false;   // a release may have been missed; never leave mouse on demand stuck on
                 Thread.Sleep(2000);
             }
         }
@@ -237,7 +238,7 @@ namespace RelativePenMode
         // Plasma's on-screen display, the one volume changes use. Best effort.
         private static void Osd(bool mouse) => System.Threading.Tasks.Task.Run(() =>
             KdeRelative.Busctl("call", "org.kde.plasmashell", "/org/kde/osdService", "org.kde.osdService", "showText", "ss",
-                mouse ? "input-mouse" : "input-tablet", mouse ? "Mouse mode" : "Pen mode"));
+                mouse ? "input-mouse" : "input-tablet", mouse ? "Mouse on demand" : "Pen"));
 
         private static bool SetInactive() => Call("setInactive", "as", [.. Ids()]) != null;
 

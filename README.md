@@ -25,7 +25,7 @@ Time) work the same as in stock Relative Mode.
 ## Optional extras (Filters tab)
 Tick an entry and click **Save**.
 
-**Relative Pen: Mouse Mode on Shortcut (default Space)**: while you hold the key, the pen drives a
+**Relative Pen: Mouse on Demand (default Space)**: while you hold the key, the pen drives a
 plain mouse (tip = left click, buttons = right/middle); let go and it's a pen again. For apps that want a
 mouse, e.g. browser pointer lock. It switches only with the tip and buttons up, and stays a mouse while you
 lift the pen to reposition. It's a KDE global shortcut, so you can rebind it in System Settings → Shortcuts
@@ -34,11 +34,11 @@ the tablet (plus 2 s after): Space types normally otherwise, but not while the p
 Turning it on also turns on KDE's "sync tablet with mouse" (see the tip below), so the pen picks up where
 the mouse left off.
 
-**Relative Pen: Absolute Pen + Mouse Mode on Shortcut (default Space)**: the pen becomes absolute (the
+**Relative Pen: Absolute Pen + Mouse on Demand (default Space)**: the pen becomes absolute (the
 tablet maps to the screen, like Artist Mode, set up in System Settings → Drawing Tablet under
 "OpenTabletDriver Absolute Pen"), and the shortcut gives you the same relative mouse.
 
-**Relative Pen: Mouse Mode Shortcut Toggles Instead of Hold**: press once for mouse, again for pen, with
+**Relative Pen: Mouse on Demand Toggles Instead of Hold**: press once for mouse, again for pen, with
 Plasma's on-screen display saying which. Putting the pen away (2 s out of range) returns it to pen.
 
 **Relative Pen: Freeze Cursor Position on Supported App Sliders**: lets
